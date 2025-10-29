@@ -1,0 +1,31 @@
+{% extends 'base.html' %}
+{% block title %}Upload Documents - Employee Onboarding{% endblock %}
+{% block content %}
+  <h1>Upload Documents</h1>
+  <p><strong>Employee:</strong> {{ emp.first_name }} {{ emp.last_name }} ({{ emp.employee_id }})</p>
+  {% if errors and errors|length %}
+  <div class="errors">
+    <ul>
+      {% for e in errors %}<li>{{ e }}</li>{% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+  <form method="post" enctype="multipart/form-data">
+    <label>Document Type
+      <select name="kind" required>
+        <option value="ssn">SSN Card</option>
+        <option value="passport">Passport</option>
+        <option value="i9A">I-9 List A</option>
+        <option value="i9B">I-9 List B</option>
+        <option value="i9C">I-9 List C</option>
+        <option value="other">Other</option>
+      </select>
+    </label>
+    <label>File <input type="file" name="file" accept=".pdf,.png,.jpg,.jpeg" required></label>
+    <button class="btn" type="submit">Upload</button>
+  </form>
+  <p>
+    <a href="/status/{{ emp.employee_id }}">Go to Status</a>
+  </p>
+{% endblock %}
+

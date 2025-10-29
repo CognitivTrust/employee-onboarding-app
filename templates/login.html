@@ -1,0 +1,13 @@
+{% extends 'base.html' %}
+{% block title %}Employee Login{% endblock %}
+{% block content %}
+  <h1>Employee Login</h1>
+  {% if error %}
+  <div class="errors"><p>{{ error }}</p></div>
+  {% endif %}
+  <form method="post">
+    <label>Employee ID <input name="employee_id" required></label>
+    <button class="btn" type="submit">Login</button>
+  </form>
+{% endblock %}
+

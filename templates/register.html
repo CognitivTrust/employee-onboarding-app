@@ -1,0 +1,48 @@
+{% extends 'base.html' %}
+{% block title %}Register - Employee Onboarding{% endblock %}
+{% block content %}
+  <h1>Registration</h1>
+  {% if errors and errors|length %}
+  <div class="errors">
+    <ul>
+      {% for e in errors %}<li>{{ e }}</li>{% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+  <form method="post">
+    <fieldset>
+      <legend>Personal Info</legend>
+      <label>First Name <input name="first_name" required></label>
+      <label>Last Name <input name="last_name" required></label>
+      <label>Date of Birth <input name="dob" type="date" required></label>
+      <label>SSN (last 4) <input name="ssn_last4" maxlength="4" required></label>
+      <label>Email <input name="email" type="email"></label>
+      <label>Phone <input name="phone" type="tel"></label>
+    </fieldset>
+
+    <fieldset>
+      <legend>I-9 Basics</legend>
+      <label>Section 1 Attestation
+        <select name="i9_attestation" required>
+          <option value="">-- Select --</option>
+          <option>Citizen</option>
+          <option>Noncitizen National</option>
+          <option>Lawful Permanent Resident</option>
+          <option>Authorized to work</option>
+        </select>
+      </label>
+      <label>Document List (A/B/C)
+        <select name="i9_list" required>
+          <option value="">-- Select --</option>
+          <option value="A">List A</option>
+          <option value="B">List B</option>
+          <option value="C">List C</option>
+        </select>
+      </label>
+      <label>Document Description <input name="i9_desc" placeholder="e.g., US Passport"></label>
+    </fieldset>
+
+    <button class="btn" type="submit">Continue to Document Upload</button>
+  </form>
+{% endblock %}
+

@@ -1,0 +1,24 @@
+{% extends 'base.html' %}
+{% block title %}Verification Status - Employee Onboarding{% endblock %}
+{% block content %}
+  <h1>Verification Status</h1>
+  <p><strong>Employee:</strong> {{ emp.first_name }} {{ emp.last_name }} ({{ emp.employee_id }})</p>
+  <p><strong>Status:</strong> {{ emp.verification_status | capitalize }}</p>
+  <h3>Uploaded Documents</h3>
+  {% if emp.documents|length == 0 %}
+    <p>No documents uploaded yet.</p>
+  {% else %}
+  <ul>
+    {% for d in emp.documents %}
+      <li>{{ d.kind }} — {{ d.filename }}</li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+  <p>
+    <a class="btn" href="/upload/{{ emp.employee_id }}">Upload More</a>
+    {% if emp.verification_status == 'verified' %}
+      <a class="btn" href="/login">Login</a>
+    {% endif %}
+  </p>
+{% endblock %}
+
