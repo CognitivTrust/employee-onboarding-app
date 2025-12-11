@@ -11,11 +11,62 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
+from passlib.context import CryptContext
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+from fastapi_csrf_protect import CsrfProtect
+from pydantic import BaseModel, validator, EmailStr, Field
+import logging
+import re
 
 from .database import Base, engine, get_db
 from .models import Employee, Document
 from .verification import verify_identity, validate_i9, generate_employee_id
 from .auth import set_session, clear_session, get_current_employee_id
+
+# Password hashing
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+# Rate limiting
+limiter = Limiter(key_func=get_remote_address)
+
+# CSRF Protection
+@CsrfProtect.load_config
+def get_csrf_config():
+    return [("secret_key", SECRET_KEY), ("max_age", 3600)]
+
+
+# Pydantic models for input validation
+class RegisterForm(BaseModel):
+    first_name: str = Field(..., min_length=1, max_length=100)
+    last_name: str = Field(..., min_length=1, max_length=100)
+    dob: str = Field(..., regex=r'^\d{4}-\d{2}-\d{2}$')
+    ssn_last4: str = Field(..., regex=r'^\d{4}$')
+    password: str = Field(..., min_length=8)
+    email: EmailStr | None = None
+    phone: str | None = Field(None, regex=r'^\+?1?[-.\s]?\(?[0-9]{3}\)?[-.\s]?[0-9]{3}[-.\s]?[0-9]{4}$')
+    i9_attestation: str = Field(..., min_length=1)
+    i9_list: str = Field(..., regex=r'^[A-C]$')
+    i9_desc: str = Field(..., min_length=1, max_length=255)
+
+    @validator('first_name', 'last_name')
+    def validate_name(cls, v):
+        if not re.match(r'^[a-zA-Z\s\-]+$', v):
+            raise ValueError('Name must contain only letters, spaces, and hyphens')
+        return v.strip()
+
+    @validator('password')
+    def validate_password(cls, v):
+        if not re.match(r'^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,}$', v):
+            raise ValueError('Password must be at least 8 characters with uppercase, lowercase, number, and special character')
+        return v
+
+
+class LoginForm(BaseModel):
+    employee_id: str = Field(..., min_length=1, max_length=16)
+    password: str = Field(..., min_length=1)
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -31,6 +82,11 @@ Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="Employee Onboarding (US)")
 
+# Add rate limiting middleware
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
+
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
@@ -42,8 +98,18 @@ def render(request: Request, template: str, context: dict) -> HTMLResponse:
     return templates.TemplateResponse(template, {"request": request, **context})
 
 
+def get_current_employee(request: Request, db: Session = Depends(get_db)) -> Employee | None:
+    employee_id = get_current_employee_id(request, SECRET_KEY)
+    if not employee_id:
+        return None
+    return db.query(Employee).filter_by(employee_id=employee_id).first()
+
+
 @app.middleware("http")
-async def add_security_headers(request, call_next):
+async def enforce_https(request, call_next):
+    if request.headers.get("x-forwarded-proto") == "http":
+        url = request.url.replace(scheme="https")
+        return RedirectResponse(url=url, status_code=301)
     response = await call_next(request)
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
@@ -62,30 +128,25 @@ def register_form(request: Request):
 
 
 @app.post("/register")
+@limiter.limit("3/minute")
 def register_submit(
     request: Request,
-    first_name: str = Form(...),
-    last_name: str = Form(...),
-    dob: str = Form(...),
-    ssn_last4: str = Form(...),
-    email: str | None = Form(None),
-    phone: str | None = Form(None),
-    i9_attestation: str = Form(...),
-    i9_list: str = Form(...),
-    i9_desc: str = Form(...),
+    csrf_protect: CsrfProtect = Depends(),
+    form_data: RegisterForm = Depends(),
     db: Session = Depends(get_db),
 ):
+    csrf_protect.validate_csrf(request)
     errors: list[str] = []
     try:
-        dob_date = date.fromisoformat(dob)
+        dob_date = date.fromisoformat(form_data.dob)
     except Exception:
         errors.append("DOB must be in YYYY-MM-DD format.")
         return render(request, "register.html", {"errors": errors})
 
-    ok, msg = verify_identity(f"{first_name} {last_name}", dob_date, ssn_last4)
+    ok, msg = verify_identity(f"{form_data.first_name} {form_data.last_name}", dob_date, form_data.ssn_last4)
     if not ok:
         errors.append(msg or "Identity verification failed.")
-    ok, msg = validate_i9(i9_attestation, i9_list, i9_desc)
+    ok, msg = validate_i9(form_data.i9_attestation, form_data.i9_list, form_data.i9_desc)
     if not ok:
         errors.append(msg or "I-9 validation failed.")
 
@@ -93,16 +154,17 @@ def register_submit(
         return render(request, "register.html", {"errors": errors})
 
     emp = Employee(
-        employee_id=generate_employee_id(first_name, last_name, dob_date),
-        first_name=first_name.strip(),
-        last_name=last_name.strip(),
+        employee_id=generate_employee_id(form_data.first_name, form_data.last_name, dob_date),
+        first_name=form_data.first_name.strip(),
+        last_name=form_data.last_name.strip(),
         dob=dob_date,
-        ssn_last4=ssn_last4,
-        email=email,
-        phone=phone,
-        i9_section1_attestation=i9_attestation,
-        i9_document_list=i9_list,
-        i9_document_desc=i9_desc,
+        ssn_last4=form_data.ssn_last4,
+        password_hash=pwd_context.hash(form_data.password),
+        email=form_data.email,
+        phone=form_data.phone,
+        i9_section1_attestation=form_data.i9_attestation,
+        i9_document_list=form_data.i9_list,
+        i9_document_desc=form_data.i9_desc,
         verification_status="pending",
     )
     db.add(emp)
@@ -114,6 +176,9 @@ def register_submit(
 
 @app.get("/upload/{employee_id}", response_class=HTMLResponse)
 def upload_form(employee_id: str, request: Request, db: Session = Depends(get_db)):
+    current_emp = get_current_employee(request, db)
+    if not current_emp or current_emp.employee_id != employee_id:
+        raise HTTPException(status_code=403, detail="Forbidden")
     emp = db.query(Employee).filter_by(employee_id=employee_id).first()
     if not emp:
         raise HTTPException(status_code=404, detail="Employee not found")
@@ -134,10 +199,15 @@ def secure_filename(filename: str) -> str:
 async def upload_submit(
     employee_id: str,
     request: Request,
+    csrf_protect: CsrfProtect = Depends(),
     kind: str = Form(...),
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
 ):
+    csrf_protect.validate_csrf(request)
+    current_emp = get_current_employee(request, db)
+    if not current_emp or current_emp.employee_id != employee_id:
+        raise HTTPException(status_code=403, detail="Forbidden")
     emp = db.query(Employee).filter_by(employee_id=employee_id).first()
     if not emp:
         raise HTTPException(status_code=404, detail="Employee not found")
@@ -170,6 +240,9 @@ async def upload_submit(
 
 @app.get("/status/{employee_id}", response_class=HTMLResponse)
 def status_page(employee_id: str, request: Request, db: Session = Depends(get_db)):
+    current_emp = get_current_employee(request, db)
+    if not current_emp or current_emp.employee_id != employee_id:
+        raise HTTPException(status_code=403, detail="Forbidden")
     emp = db.query(Employee).filter_by(employee_id=employee_id).first()
     if not emp:
         raise HTTPException(status_code=404, detail="Employee not found")
@@ -187,10 +260,13 @@ def login_form(request: Request):
 
 
 @app.post("/login")
-def login_submit(request: Request, employee_id: str = Form(...), db: Session = Depends(get_db)):
-    emp = db.query(Employee).filter_by(employee_id=employee_id.strip()).first()
-    if not emp or emp.verification_status != "verified":
-        return render(request, "login.html", {"error": "Employee not found or not verified yet."})
+@limiter.limit("5/minute")
+def login_submit(request: Request, form_data: LoginForm = Depends(), db: Session = Depends(get_db)):
+    emp = db.query(Employee).filter_by(employee_id=form_data.employee_id.strip()).first()
+    if not emp or emp.verification_status != "verified" or not pwd_context.verify(form_data.password, emp.password_hash):
+        logging.warning(f"Failed login attempt for employee_id: {form_data.employee_id} from IP: {request.client.host}")
+        return render(request, "login.html", {"error": "Invalid credentials or not verified yet."})
+    logging.info(f"Successful login for employee_id: {form_data.employee_id}")
     response = RedirectResponse(url="/profile", status_code=303)
     set_session(response, SECRET_KEY, emp.employee_id)
     return response
@@ -205,10 +281,7 @@ def logout():
 
 @app.get("/profile", response_class=HTMLResponse)
 def profile(request: Request, db: Session = Depends(get_db)):
-    employee_id = get_current_employee_id(request, SECRET_KEY)
-    if not employee_id:
-        return RedirectResponse(url="/login", status_code=303)
-    emp = db.query(Employee).filter_by(employee_id=employee_id).first()
+    emp = get_current_employee(request, db)
     if not emp:
         return RedirectResponse(url="/login", status_code=303)
     return render(request, "profile.html", {"emp": emp})

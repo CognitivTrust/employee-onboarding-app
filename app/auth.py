@@ -15,7 +15,7 @@ def get_signer(secret_key: str) -> URLSafeSerializer:
 def set_session(response: Response, secret_key: str, employee_id: str) -> None:
     signer = get_signer(secret_key)
     token = signer.dumps({"employee_id": employee_id})
-    response.set_cookie(SESSION_COOKIE_NAME, token, httponly=True, samesite="lax")
+    response.set_cookie(SESSION_COOKIE_NAME, token, httponly=True, secure=True, samesite="strict")
 
 
 def clear_session(response: Response) -> None:

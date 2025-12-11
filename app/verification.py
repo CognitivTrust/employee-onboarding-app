@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import logging
 from datetime import date
 
 
@@ -13,10 +14,15 @@ def generate_employee_id(first_name: str, last_name: str, dob: date) -> str:
 
 def verify_identity(name: str, dob: date, ssn_last4: str) -> tuple[bool, str | None]:
     if not re.fullmatch(r"\d{4}", ssn_last4 or ""):
+        logging.warning(f"Invalid SSN format for identity verification: {name}")
         return False, "SSN last 4 must be exactly 4 digits."
     # Simulated identity check: deterministic pseudo-check
     seed = f"{name}|{dob.isoformat()}|{ssn_last4}"
     ok = int(hashlib.md5(seed.encode()).hexdigest(), 16) % 7 != 0
+    if not ok:
+        logging.warning(f"Identity verification failed for: {name}")
+    else:
+        logging.info(f"Identity verification successful for: {name}")
     return (True, None) if ok else (False, "Automated identity check could not verify the information.")
 
 
